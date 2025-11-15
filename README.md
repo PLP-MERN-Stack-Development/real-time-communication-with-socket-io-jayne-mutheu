@@ -1,77 +1,243 @@
 # Real-Time Chat Application with Socket.io
 
-This assignment focuses on building a real-time chat application using Socket.io, implementing bidirectional communication between clients and server.
+A minimal, extensible real-time chat application built with:
+- Server: Node.js + Express + Socket.io
+- Client: React + Vite + socket.io-client
 
-## Assignment Overview
+This README describes the project structure, how to run the app locally, environment variables, the socket event contract, common usage patterns, and suggestions for extending or deploying the app.
 
-You will build a chat application with the following features:
-1. Real-time messaging using Socket.io
-2. User authentication and presence
-3. Multiple chat rooms or private messaging
-4. Real-time notifications
-5. Advanced features like typing indicators and read receipts
+---
 
-## Project Structure
+## Table of contents
+- Project overview
+- Features
+- Project structure
+- Requirements
+- Environment variables
+- Install & run (server & client)
+- REST API endpoints
+- Socket events (server ⇄ client contract)
+- Client usage examples (init & hook)
+- Dev & production notes
+- Optional enhancements
+- Troubleshooting
+- License
 
+---
+
+## Project overview
+This repository contains two parts:
+- `server/` — an Express server exposing HTTP endpoints and a Socket.io server that handles real-time events (user presence, messaging, typing indicators, private messages, rooms, read receipts).
+- `client/` — a React app (Vite) that connects to the Socket.io server, presents a UI for login, global chat, private messaging, typing indicators, and a user list.
+
+The app uses an in-memory store for demo/demo-assignment purposes. Replace in-memory storage with a DB (e.g., MongoDB) for persistence in production.
+
+---
+
+## Features
+- Real-time global chat
+- Username-based authentication (simple)
+- Presence: online user list, join/leave notifications
+- Typing indicator
+- Private (1:1) messaging
+- Rooms (join/leave)
+- Read receipts (message_read / read_message)
+- HTTP endpoints to fetch recent messages and users
+
+---
+
+## Project structure
 ```
 socketio-chat/
-├── client/                 # React front-end
-│   ├── public/             # Static files
-│   ├── src/                # React source code
-│   │   ├── components/     # UI components
-│   │   ├── context/        # React context providers
-│   │   ├── hooks/          # Custom React hooks
-│   │   ├── pages/          # Page components
-│   │   ├── socket/         # Socket.io client setup
-│   │   └── App.jsx         # Main application component
-│   └── package.json        # Client dependencies
+├── client/                 # React front-end (Vite)
+│   ├── public/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   └── socket/
+│   ├── package.json
+│   └── vite.config.js
 ├── server/                 # Node.js back-end
-│   ├── config/             # Configuration files
-│   ├── controllers/        # Socket event handlers
-│   ├── models/             # Data models
-│   ├── socket/             # Socket.io server setup
-│   ├── utils/              # Utility functions
-│   ├── server.js           # Main server file
-│   └── package.json        # Server dependencies
-└── README.md               # Project documentation
+│   ├── config/
+│   ├── controllers/
+│   ├── socket/
+│   ├── utils/
+│   ├── server.js
+│   └── package.json
+└── README.md
 ```
 
-## Getting Started
-
-1. Accept the GitHub Classroom assignment invitation
-2. Clone your personal repository that was created by GitHub Classroom
-3. Follow the setup instructions in the `Week5-Assignment.md` file
-4. Complete the tasks outlined in the assignment
-
-## Files Included
-
-- `Week5-Assignment.md`: Detailed assignment instructions
-- Starter code for both client and server:
-  - Basic project structure
-  - Socket.io configuration templates
-  - Sample components for the chat interface
+---
 
 ## Requirements
-
-- Node.js (v18 or higher)
+- Node.js v18+ (recommended)
 - npm or yarn
-- Modern web browser
-- Basic understanding of React and Express
+- Modern browser for client
 
-## Submission
+---
 
-Your work will be automatically submitted when you push to your GitHub Classroom repository. Make sure to:
+## Environment variables
 
-1. Complete both the client and server portions of the application
-2. Implement the core chat functionality
-3. Add at least 3 advanced features
-4. Document your setup process and features in the README.md
-5. Include screenshots or GIFs of your working application
-6. Optional: Deploy your application and add the URLs to your README.md
+Server (`server/.env`):
+```
+PORT=5000
+CLIENT_URL=http://localhost:5173
+MAX_STORED_MESSAGES=200
+MAX_MESSAGE_LENGTH=1000
+NODE_ENV=development
+JWT_SECRET=change_this_to_a_strong_secret   # optional - only if JWT auth added
+```
 
-## Resources
+Client (`client/.env` or client/.env.local`):
+```
+VITE_SERVER_URL=http://localhost:5000
+```
 
-- [Socket.io Documentation](https://socket.io/docs/v4/)
-- [React Documentation](https://react.dev/)
-- [Express.js Documentation](https://expressjs.com/)
-- [Building a Chat Application with Socket.io](https://socket.io/get-started/chat) 
+---
+
+## Install & run
+
+1. Clone the repo and open two shells / terminals.
+
+2. Server
+```bash
+cd server
+npm install
+# development
+npm run dev   # (nodemon server.js)
+# or production
+npm start
+```
+
+3. Client
+```bash
+cd client
+npm install
+npm run dev   # (Vite dev server, default port 5173)
+```
+
+4. Open the client in your browser: http://localhost:5173 (or the Vite-provided URL). Connect with a display name and test in multiple tabs/devices.
+
+---
+
+## REST API endpoints (server)
+- GET /api/messages — returns the recent in-memory messages array
+- GET /api/users — returns the current connected users
+
+These endpoints are lightweight helpers for client initial state hydration. In production, persist messages in DB and support pagination.
+
+---
+
+## Socket event contract (high-level)
+
+Client → Server events
+- `user_join` — payload: { username, room? } — (server may ack with { ok: true, id })
+- `join_room` — payload: roomName (string) — ack: { ok: true | false }
+- `leave_room` — payload: roomName (string) — ack: { ok: true | false }
+- `send_message` — payload: { text, room? } — ack: { ok: true, messageId, timestamp } or error
+- `private_message` — payload: { to: socketId, text } — ack: { ok: true, messageId, timestamp } or error
+- `typing` — payload: { isTyping: boolean, room?: string }
+- `read_message` — payload: { messageId, room?: string }
+
+Server → Client events
+- `user_list` — payload: Array<{ id, username }>
+- `user_joined` — payload: { username, id }
+- `user_left` — payload: { username, id, reason? }
+- `user_joined_room` / `user_left_room` — payload: { username, id, room }
+- `receive_message` — payload: { id, text, sender, senderId, timestamp, room?, isPrivate: false }
+- `private_message` — payload: { id, text, sender, senderId, recipientId, timestamp, isPrivate: true }
+- `typing_users` — payload: Array<username> (or per-room typing lists)
+- `message_read` — payload: { messageId, readerId, username, timestamp }
+
+Notes:
+- Many server handlers support ack callbacks. The client should pass a callback to receive acknowledgment or use timeouts.
+- Room-scoped emits use `io.to(room).emit(...)` on the server so clients in that room receive room events.
+
+---
+
+## Client usage examples
+
+Minimal init (global):
+```js
+// client/src/socket/socket.js (example)
+import { initSocket, getSocket } from './socket'
+
+initSocket({ serverUrl: import.meta.env.VITE_SERVER_URL, username: 'Alice' })
+const socket = getSocket()
+socket.connect()
+
+// send message with ack
+socket.emit('send_message', { text: 'Hello world' }, (ack) => {
+  if (ack && ack.ok) console.log('delivered', ack.messageId)
+})
+```
+
+Using the provided React hook:
+```jsx
+import { useSocket } from './socket/socket'
+
+function Chat({ username }) {
+  const { messages, users, sendMessage, sendPrivateMessage, setTyping } = useSocket({ username })
+
+  // send public message
+  await sendMessage('Hello everyone!')
+
+  // send private message by socket id
+  await sendPrivateMessage('target-socket-id', 'Hey there!')
+
+  // typing indicator
+  setTyping(true)
+}
+```
+
+---
+
+## Development notes & recommendations
+- In-memory stores (Map/array) are fine for demos but not for production. Add a DB (MongoDB + Mongoose, Postgres) and persist messages, users, rooms, and read receipts.
+- For authentication, implement JWT login endpoints and validate the token during the socket handshake (or use cookie-based sessions).
+- Limit message size and sanitize inputs both on server and client.
+- Use namespaces or dedicated rooms to scale large deployments. Configure Redis adapter for Socket.io to scale across multiple server instances.
+- Add proper CORS origins, rate limiting, and helmet headers (server side) — already included in the example server.
+
+---
+
+## Optional enhancements (priorities)
+- Persist messages and implement pagination on /api/messages
+- Upload and serve images/files (multer + storage like S3)
+- Delivery and read receipts UI (client + server)
+- Message reactions (emoji)
+- Browser notifications (Notification API)
+- End-to-end encryption (for private messages)
+- Add automated tests and a CI workflow
+
+---
+
+## Troubleshooting
+- Client can't connect:
+  - Confirm VITE_SERVER_URL matches server listening address and port.
+  - Check server console for CORS errors or socket connection errors.
+  - If using Docker, ensure ports are exposed and host is reachable.
+- Reconnection attempts exhausted:
+  - Check server-side logs; increase reconnectionAttempts or enable `autoConnect: true` depending on your flow.
+- Duplicate listeners / memory leak:
+  - Ensure your React components unsubscribe socket events on unmount. Use `socket.off(...)` or component cleanup in useEffect.
+
+---
+
+## Security & production checklist
+- Replace in-memory stores with persistent DB
+- Use HTTPS / secure WebSocket (wss://) in production
+- Use strong JWT secret and token expiration if you enable JWT
+- Sanitize and validate all incoming event payloads server-side
+- Deploy Socket.io with a horizontal scaling adapter (Redis) when running multiple server instances
+- Enable proper logging and monitoring
+
+---
+
+## License
+MIT
+
+---
+
+## Acknowledgements
+This project was scaffolded to satisfy a Week 5 assignment on real-time communication with Socket.io. It follows Socket.io and React best-practices for an educational/demo-level chat app.

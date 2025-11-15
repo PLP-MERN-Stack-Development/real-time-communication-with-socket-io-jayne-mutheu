@@ -1,138 +1,224 @@
-// socket.js - Socket.io client setup
+// client/src/socket/socket.js
+// Improved Socket.io client manager + React hook
+// - Matches server ack-style handlers (accepts { username } payload on user_join)
+// - Uses lazy init, avoids duplicate listeners
+// - Exposes initSocket/getSocket and a useSocket hook
+// - sendMessage/sendPrivateMessage return Promises that resolve when server acks
 
-import { io } from 'socket.io-client';
-import { useEffect, useState } from 'react';
+import { io } from 'socket.io-client'
+import { useEffect, useRef, useState } from 'react'
 
-// Socket.io connection URL
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+const DEFAULT_SERVER = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000'
 
-// Create socket instance
-export const socket = io(SOCKET_URL, {
-  autoConnect: false,
-  reconnection: true,
-  reconnectionAttempts: 5,
-  reconnectionDelay: 1000,
-});
+let socketInstance = null
 
-// Custom hook for using socket.io
-export const useSocket = () => {
-  const [isConnected, setIsConnected] = useState(socket.connected);
-  const [lastMessage, setLastMessage] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [typingUsers, setTypingUsers] = useState([]);
+export function initSocket({ serverUrl = DEFAULT_SERVER, username } = {}) {
+  if (socketInstance) return socketInstance
 
-  // Connect to socket server
-  const connect = (username) => {
-    socket.connect();
+  socketInstance = io(serverUrl, {
+    autoConnect: false,
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    reconnectionAttempts: 5,
+    reconnectionDelay: 1000,
+  })
+
+  // When the socket connects, let the server know who we are (with ack)
+  socketInstance.on('connect', () => {
     if (username) {
-      socket.emit('user_join', username);
+      // Server expects an object payload { username } and may ack
+      socketInstance.emit('user_join', { username }, (ack) => {
+        // optional: handle ack (ack === { ok: true, id: ... })
+        // console.debug('user_join ack', ack)
+      })
     }
-  };
+  })
 
-  // Disconnect from socket server
-  const disconnect = () => {
-    socket.disconnect();
-  };
+  // Basic error logging
+  socketInstance.on('connect_error', (err) => {
+    console.error('Socket connect_error', err)
+  })
 
-  // Send a message
-  const sendMessage = (message) => {
-    socket.emit('send_message', { message });
-  };
+  return socketInstance
+}
 
-  // Send a private message
-  const sendPrivateMessage = (to, message) => {
-    socket.emit('private_message', { to, message });
-  };
+export function getSocket() {
+  if (!socketInstance) throw new Error('Socket not initialized. Call initSocket({ username }) first.')
+  return socketInstance
+}
 
-  // Set typing status
-  const setTyping = (isTyping) => {
-    socket.emit('typing', isTyping);
-  };
+// Helper that returns a Promise for emits that support an ack callback
+function emitWithAck(socket, event, payload, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    let called = false
+    function onAck(response) {
+      called = true
+      resolve(response)
+    }
+    try {
+      socket.timeout(timeout).emit(event, payload, (err, res) => {
+        // If server uses the socket.io timeout transport, it may call the callback differently.
+        // We handle both common callback styles:
+        if (err) {
+          reject(err)
+        } else {
+          resolve(res || true)
+        }
+      })
+    } catch (e) {
+      // Fallback: use classic emit with ack if available
+      try {
+        socket.emit(event, payload, onAck)
+        // fallback timeout
+        setTimeout(() => {
+          if (!called) resolve({ ok: false, error: 'ack timeout' })
+        }, timeout)
+      } catch (err) {
+        reject(err)
+      }
+    }
+  })
+}
 
-  // Socket event listeners
+// React hook that wires up socket events and exposes actions/state
+export function useSocket({ serverUrl = DEFAULT_SERVER, username } = {}) {
+  const [isConnected, setIsConnected] = useState(false)
+  const [messages, setMessages] = useState([])
+  const [lastMessage, setLastMessage] = useState(null)
+  const [users, setUsers] = useState([])
+  const [typingUsers, setTypingUsers] = useState([])
+  const socketRef = useRef(null)
+
   useEffect(() => {
-    // Connection events
-    const onConnect = () => {
-      setIsConnected(true);
-    };
+    // Initialize socket with optional username
+    const s = initSocket({ serverUrl, username })
+    socketRef.current = s
 
-    const onDisconnect = () => {
-      setIsConnected(false);
-    };
+    // Connect if not connected
+    if (!s.connected) s.connect()
 
-    // Message events
-    const onReceiveMessage = (message) => {
-      setLastMessage(message);
-      setMessages((prev) => [...prev, message]);
-    };
-
-    const onPrivateMessage = (message) => {
-      setLastMessage(message);
-      setMessages((prev) => [...prev, message]);
-    };
-
-    // User events
-    const onUserList = (userList) => {
-      setUsers(userList);
-    };
-
-    const onUserJoined = (user) => {
-      // You could add a system message here
+    // Handlers
+    function handleConnect() {
+      setIsConnected(true)
+    }
+    function handleDisconnect() {
+      setIsConnected(false)
+    }
+    function handleReceiveMessage(message) {
+      setLastMessage(message)
+      setMessages((prev) => [...prev, message])
+    }
+    function handlePrivateMessage(message) {
+      setLastMessage(message)
+      setMessages((prev) => [...prev, { ...message, private: true }])
+    }
+    function handleUserList(list) {
+      setUsers(list)
+    }
+    function handleUserJoined(payload) {
       setMessages((prev) => [
         ...prev,
         {
-          id: Date.now(),
+          id: `sys-${Date.now()}`,
           system: true,
-          message: `${user.username} joined the chat`,
+          text: `${payload.username} joined`,
           timestamp: new Date().toISOString(),
         },
-      ]);
-    };
-
-    const onUserLeft = (user) => {
-      // You could add a system message here
+      ])
+    }
+    function handleUserLeft(payload) {
       setMessages((prev) => [
         ...prev,
         {
-          id: Date.now(),
+          id: `sys-${Date.now()}`,
           system: true,
-          message: `${user.username} left the chat`,
+          text: `${payload.username} left`,
           timestamp: new Date().toISOString(),
         },
-      ]);
-    };
+      ])
+    }
+    function handleTypingUsers(list) {
+      setTypingUsers(list)
+    }
 
-    // Typing events
-    const onTypingUsers = (users) => {
-      setTypingUsers(users);
-    };
+    // Register listeners
+    s.on('connect', handleConnect)
+    s.on('disconnect', handleDisconnect)
+    s.on('receive_message', handleReceiveMessage)
+    s.on('private_message', handlePrivateMessage)
+    s.on('user_list', handleUserList)
+    s.on('user_joined', handleUserJoined)
+    s.on('user_left', handleUserLeft)
+    s.on('typing_users', handleTypingUsers)
 
-    // Register event listeners
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
-    socket.on('receive_message', onReceiveMessage);
-    socket.on('private_message', onPrivateMessage);
-    socket.on('user_list', onUserList);
-    socket.on('user_joined', onUserJoined);
-    socket.on('user_left', onUserLeft);
-    socket.on('typing_users', onTypingUsers);
+    // Try to load initial messages via HTTP (best-effort)
+    fetch((import.meta.env.VITE_SERVER_URL || DEFAULT_SERVER) + '/api/messages')
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setMessages(data)
+        }
+      })
+      .catch(() => {
+        // ignore
+      })
 
-    // Clean up event listeners
+    // Cleanup on unmount
     return () => {
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('receive_message', onReceiveMessage);
-      socket.off('private_message', onPrivateMessage);
-      socket.off('user_list', onUserList);
-      socket.off('user_joined', onUserJoined);
-      socket.off('user_left', onUserLeft);
-      socket.off('typing_users', onTypingUsers);
-    };
-  }, []);
+      try {
+        s.off('connect', handleConnect)
+        s.off('disconnect', handleDisconnect)
+        s.off('receive_message', handleReceiveMessage)
+        s.off('private_message', handlePrivateMessage)
+        s.off('user_list', handleUserList)
+        s.off('user_joined', handleUserJoined)
+        s.off('user_left', handleUserLeft)
+        s.off('typing_users', handleTypingUsers)
+      } catch (e) {
+        // ignore
+      }
+      // do not fully close the socket here if you expect it to persist across pages.
+      // If you want to disconnect when the hook unmounts, uncomment next line:
+      // s.disconnect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverUrl, username]) // re-run if serverUrl or username changes
+
+  // Actions
+  const connect = (name) => {
+    const s = socketRef.current || initSocket({ serverUrl, username: name })
+    if (!s.connected) s.connect()
+    if (name) s.emit('user_join', { username: name })
+  }
+
+  const disconnect = () => {
+    const s = socketRef.current
+    if (s && s.connected) s.disconnect()
+  }
+
+  // send message with ack; resolves ack object or throws on error
+  const sendMessage = async (text, room = null) => {
+    const s = socketRef.current
+    if (!s) throw new Error('Socket not initialized')
+    const payload = { text, room }
+    return emitWithAck(s, 'send_message', payload)
+  }
+
+  const sendPrivateMessage = async (toSocketId, text) => {
+    const s = socketRef.current
+    if (!s) throw new Error('Socket not initialized')
+    const payload = { to: toSocketId, text }
+    return emitWithAck(s, 'private_message', payload)
+  }
+
+  const setTyping = (isTyping, room = null) => {
+    const s = socketRef.current
+    if (!s) return
+    s.emit('typing', { isTyping, room })
+  }
 
   return {
-    socket,
+    socket: socketRef.current,
     isConnected,
     lastMessage,
     messages,
@@ -143,7 +229,7 @@ export const useSocket = () => {
     sendMessage,
     sendPrivateMessage,
     setTyping,
-  };
-};
+  }
+}
 
-export default socket; 
+export default initSocket
